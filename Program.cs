@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Threading.Tasks;
+using Newtonsoft.Json;
 
 namespace multi_reader
 {
@@ -14,6 +15,7 @@ namespace multi_reader
         static async Task MainStart(string[] args)
         {
             var sourceFile = @"/home/karan/workings/MPC Flipkart Data/r.csv";
+            LoadStateCodes();
             var invoices = GetInvoices(sourceFile);
             (await invoices)?.ForEach(i => Console.WriteLine($"{i.Number} {i.Date.ToString("dd-MM-yyyy")}"));
         }
@@ -22,13 +24,15 @@ namespace multi_reader
         {
             var lines = await File.ReadAllLinesAsync(filepath);
             var sales = new List<FlipkartSale>();
-            foreach (var line in lines)
+            foreach (var line in lines.Skip(1))
             {
                 var x = 0;
-                double d = 0;
+                double d;
                 DateTime date;
 
                 var data = line.Split('\t');
+                data = data.Select(d => d.Replace("\"", string.Empty)).ToArray();
+
                 var sale = new FlipkartSale();
                 sale.SalerGstin = data[x++].Replace("\"","");
                 sale.OrderId = data[x++].Replace("\"","");
@@ -84,8 +88,25 @@ namespace multi_reader
                 sales.Add(sale);
             }
 
-            sales.Select(s => s.Product).Distinct().ToList().ForEach(n => Console.WriteLine(n));
+            var invoices = new List<RawInvoice>();
 
+            foreach (var _gS in sales.Where(s => s.EventType == "Sale").GroupBy(s => s.CustomersDeliveryState))
+            {
+                var state = _gS.Key;
+                var invoice = GetRawInvoice(_gS);
+                invoice.POS = stateCodeCollection[state];
+                invoices.Add(invoice);
+            }
+            
+            var json = JsonConvert.SerializeObject(invoices);
+            File.WriteAllText("invocies.json", json);
+
+            // Console.WriteLine(sales.Count);
+            return null;
+        }
+
+        static RawInvoice GetRawInvoice(IEnumerable<FlipkartSale> sales)
+        {
             var invoice = new RawInvoice();
             
             foreach (var sale in sales)
@@ -94,6 +115,14 @@ namespace multi_reader
                 if(found == null)
                 {
                     found = new RawInvoiceItem();
+                    found.Name = sale.Product;
+                    found.Hsn = sale.HSN;
+                    found.Quantity = 0;
+                    found.TaxableValue = 0;
+                    found.AmountIgst = 0;
+                    found.AmountCgst = 0;
+                    found.AmountSgst = 0;
+
                     invoice.RawInvoiceItems.Add(found);
                 }
                 var factor = 1;
@@ -106,9 +135,18 @@ namespace multi_reader
                 found.AmountCgst += sale.CGSTAmount.GetValueOrDefault(0) * factor;
                 found.AmountSgst += sale.SGSTAmount.GetValueOrDefault(0) * factor;
             }
+            return invoice;
+        }
 
-            // Console.WriteLine(sales.Count);
-            return null;
+        static Dictionary<string, int> stateCodeCollection = new Dictionary<string, int>();
+        static void LoadStateCodes()
+        {
+            var lines = File.ReadAllLines("statecodes");
+            for (int i = 0; i < lines.Length; i++)
+            {
+                stateCodeCollection.Add(lines[i + 1], int.TryParse(lines[i], out var r) ? r : default);
+                i++;
+            }
         }
     }
 
